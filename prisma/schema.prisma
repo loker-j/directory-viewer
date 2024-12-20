@@ -29,7 +29,7 @@ model Item {
   order     Int
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId String   @map("project_id")
-  parent    Item?    @relation("ParentChild", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  parent    Item?    @relation("ParentChild", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   children  Item[]   @relation("ParentChild")
 
   @@map("directory_items")
