@@ -15,11 +15,9 @@
   "dependencies": {
     "@prisma/client": "^6.1.0",
     "autoprefixer": "^10.4.17",
-    "bcryptjs": "^2.4.3",
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",
     "next": "14.1.0",
-    "next-auth": "^4.24.6",
     "postcss": "^8.4.35",
     "prisma": "^6.1.0",
     "qrcode": "^1.5.4",
@@ -31,7 +29,6 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20.17.10",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^18.2.55",

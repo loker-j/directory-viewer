@@ -1,3 +1,0 @@
-1|npm install @prisma/client prisma
-2|npx prisma generate
-3|npx prisma db push 

@@ -1,5 +1,0 @@
-1|cd D:\projects\directory-viewer
-2|rmdir /s /q node_modules\.prisma
-3|rmdir /s /q node_modules\@prisma
-4|npm install @prisma/client prisma
-5|npx prisma generate 
