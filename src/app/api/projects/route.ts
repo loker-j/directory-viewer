@@ -20,22 +20,33 @@ interface CreateItem {
 async function processItems(items: DirectoryItem[], projectId: string) {
   let order = 0
   const itemsToCreate: CreateItem[] = []
+  const parentChildMap = new Map<number, number[]>()
 
-  function processItem(item: DirectoryItem, parentId: string | null = null) {
-    const currentOrder = order++
+  function processItem(item: DirectoryItem, parentOrder: number | null = null) {
+    const currentOrder = order
     itemsToCreate.push({
       name: item.name,
       type: item.type,
       level: item.level,
       order: currentOrder,
-      parentId: parentId,
+      parentId: null, // 先设置为 null，后面更新
       projectId: projectId
     })
 
     if (item.children?.length) {
+      const childrenOrders: number[] = []
+      order++
+      
       for (const child of item.children) {
-        processItem(child, null) // 暂时将parentId设为null，后面更新
+        childrenOrders.push(order)
+        processItem(child, currentOrder)
       }
+      
+      if (childrenOrders.length > 0) {
+        parentChildMap.set(currentOrder, childrenOrders)
+      }
+    } else {
+      order++
     }
   }
 
@@ -64,17 +75,15 @@ async function processItems(items: DirectoryItem[], projectId: string) {
 
       // 更新父子关系
       const itemMap = new Map(createdItems.map(item => [item.order, item]))
-      const updates = []
+      const updates: { where: { id: string }, data: { parentId: string } }[] = []
 
-      for (let i = 0; i < itemsToCreate.length; i++) {
-        const originalItem = itemsToCreate[i]
-        if (originalItem.children?.length) {
-          const parentItem = itemMap.get(i)
-          const childrenOrders = originalItem.children.map((_, childIndex) => i + childIndex + 1)
-          
+      // 根据 parentChildMap 更新父子关系
+      for (const [parentOrder, childrenOrders] of parentChildMap.entries()) {
+        const parentItem = itemMap.get(parentOrder)
+        if (parentItem) {
           for (const childOrder of childrenOrders) {
             const childItem = itemMap.get(childOrder)
-            if (childItem && parentItem) {
+            if (childItem) {
               updates.push({
                 where: { id: childItem.id },
                 data: { parentId: parentItem.id }
@@ -96,7 +105,11 @@ async function processItems(items: DirectoryItem[], projectId: string) {
         }
       }
 
-      return createdItems
+      // 返回更新后的记录
+      return await tx.item.findMany({
+        where: { projectId },
+        orderBy: { order: 'asc' }
+      })
     })
   } catch (error) {
     console.error('批量处理项目时出错:', error)
