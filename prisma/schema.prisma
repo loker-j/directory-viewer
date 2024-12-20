@@ -1,0 +1,29 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  items     Item[]
+}
+
+model Item {
+  id        String   @id @default(cuid())
+  name      String
+  type      String
+  level     Int
+  parentId  String?
+  order     Int
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  parent    Item?    @relation("ParentChild", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Item[]   @relation("ParentChild")
+} 

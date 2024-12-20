@@ -1,0 +1,104 @@
+1|import { NextResponse } from 'next/server'
+2|import { prisma } from '@/lib/db'
+3|
+4|interface DirectoryItem {
+5|  name: string
+6|  type: string
+7|  level: number
+8|  children?: DirectoryItem[]
+9|}
+10|
+11|async function processItems(items: DirectoryItem[], projectId: string) {
+12|  let order = 0
+13|  const createdItems: any[] = []
+14|
+15|  async function processItem(item: DirectoryItem, parentId: string | null = null) {
+16|    try {
+17|      // 创建单个项目
+18|      const currentOrder = order++
+19|      const createdItem = await prisma.item.create({
+20|        data: {
+21|          name: item.name,
+22|          type: item.type,
+23|          level: item.level,
+24|          order: currentOrder,
+25|          parentId: parentId,
+26|          projectId: projectId
+27|        }
+28|      })
+29|
+30|      createdItems.push(createdItem)
+31|
+32|      // 处理子项，每个子项之间添加延迟
+33|      if (item.children?.length) {
+34|        for (const child of item.children) {
+35|          await new Promise(resolve => setTimeout(resolve, 100))
+36|          await processItem(child, createdItem.id)
+37|        }
+38|      }
+39|    } catch (error) {
+40|      console.error('处理项目时出错:', error)
+41|      throw error
+42|    }
+43|  }
+44|
+45|  // 逐个处理顶层项目
+46|  for (const item of items) {
+47|    await new Promise(resolve => setTimeout(resolve, 200))
+48|    await processItem(item)
+49|  }
+50|
+51|  return createdItems
+52|}
+53|
+54|export async function POST(req: Request) {
+55|  console.log('接收到 POST 请求')
+56|  try {
+57|    const formData = await req.formData()
+58|    const name = formData.get('name') as string
+59|    const structureStr = formData.get('structure') as string
+60|    
+61|    if (!name || !structureStr) {
+62|      console.log('缺少必要参数')
+63|      return NextResponse.json({ 
+64|        message: '缺少必要的参数'
+65|      }, { status: 400 })
+66|    }
+67|
+68|    let structure: DirectoryItem[]
+69|    try {
+70|      structure = JSON.parse(structureStr)
+71|    } catch (error) {
+72|      console.error('解析结构数据失败:', error)
+73|      return NextResponse.json({ 
+74|        message: '无效的目录结构数据'
+75|      }, { status: 400 })
+76|    }
+77|
+78|    // 创建项目
+79|    const project = await prisma.project.create({
+80|      data: {
+81|        name,
+82|        updatedAt: new Date(),
+83|      }
+84|    })
+85|
+86|    // 处理目录项
+87|    const items = await processItems(structure, project.id)
+88|
+89|    const result = {
+90|      ...project,
+91|      items: items.sort((a, b) => a.order - b.order)
+92|    }
+93|
+94|    console.log('项目创建成功:', result)
+95|    return NextResponse.json(result)
+96|  } catch (error) {
+97|    console.error('处理请求时出错:', error)
+98|    
+99|    return NextResponse.json({ 
+100|      message: '创建项目失败',
+101|      error: error instanceof Error ? error.message : '未知错误'
+102|    }, { status: 500 })
+103|  }
+104|} 

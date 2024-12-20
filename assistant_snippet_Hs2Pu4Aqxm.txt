@@ -1,0 +1,6 @@
+1|npm install
+1|del prisma\dev.db
+2|del dev.db
+3|npx prisma generate
+4|npx prisma migrate dev --name init 
+5|npm run dev
