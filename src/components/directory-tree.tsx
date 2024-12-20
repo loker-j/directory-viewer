@@ -1,107 +1,155 @@
 'use client'
 
-import { useState } from 'react'
-import { ChevronRight, ChevronDown, File, Folder } from 'lucide-react'
-import { formatFileSize } from '@/lib/utils'
+import { useState, useEffect, useMemo } from 'react'
+import { ChevronRight, ChevronDown, Folder, File } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 interface DirectoryItem {
   id: string
   name: string
   type: string
-  level: number
-  size: number | null
-  modifiedAt: Date | null
   parentId: string | null
+  level: number
 }
 
 interface DirectoryTreeProps {
   items: DirectoryItem[]
+  searchQuery?: string
+  currentMatchIndex: number
+  onMatchesUpdate: (matches: string[], currentIndex: number) => void
 }
 
-interface TreeNode {
-  item: DirectoryItem
-  children: TreeNode[]
-}
+export function DirectoryTree({ 
+  items, 
+  searchQuery = '',
+  currentMatchIndex,
+  onMatchesUpdate
+}: DirectoryTreeProps) {
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set())
+  const [matchedItems, setMatchedItems] = useState<string[]>([])
 
-function buildTree(items: DirectoryItem[]): TreeNode[] {
-  const itemMap = new Map<string, TreeNode>()
-  const roots: TreeNode[] = []
+  // 构建父子关系映射
+  const itemsMap = useMemo(() => {
+    const map = new Map<string | null, DirectoryItem[]>()
+    items.forEach(item => {
+      const parentItems = map.get(item.parentId) || []
+      parentItems.push(item)
+      map.set(item.parentId, parentItems)
+    })
+    return map
+  }, [items])
 
-  // 创建所有节点
-  items.forEach(item => {
-    itemMap.set(item.id, { item, children: [] })
-  })
+  // 搜索处理
+  useEffect(() => {
+    if (!searchQuery) {
+      setMatchedItems([])
+      onMatchesUpdate([], -1)
+      return
+    }
 
-  // 构建树结构
-  items.forEach(item => {
-    const node = itemMap.get(item.id)!
-    if (item.parentId) {
-      const parent = itemMap.get(item.parentId)
-      if (parent) {
-        parent.children.push(node)
+    const matches: string[] = []
+    const parentIds = new Set<string>()
+
+    // 查找匹配项及其所有父项
+    const findMatchesAndParents = (item: DirectoryItem) => {
+      if (item.name.toLowerCase().includes(searchQuery)) {
+        matches.push(item.id)
+        // 查找所有父项
+        let currentParentId = item.parentId
+        while (currentParentId) {
+          parentIds.add(currentParentId)
+          const parent = items.find(i => i.id === currentParentId)
+          if (parent) {
+            currentParentId = parent.parentId
+          } else {
+            break
+          }
+        }
       }
+    }
+
+    items.forEach(findMatchesAndParents)
+
+    // 自动展开包含匹配项的文件夹
+    setExpandedItems(new Set([...parentIds]))
+    setMatchedItems(matches)
+    onMatchesUpdate(matches, matches.length > 0 ? 0 : -1)
+  }, [searchQuery, items, onMatchesUpdate])
+
+  // 当前匹配项变化时，滚动到视图
+  useEffect(() => {
+    if (matchedItems.length > 0 && currentMatchIndex >= 0) {
+      const element = document.getElementById(`item-${matchedItems[currentMatchIndex]}`)
+      element?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [currentMatchIndex, matchedItems])
+
+  const toggleExpand = (itemId: string) => {
+    const newExpanded = new Set(expandedItems)
+    if (newExpanded.has(itemId)) {
+      newExpanded.delete(itemId)
     } else {
-      roots.push(node)
+      newExpanded.add(itemId)
     }
-  })
-
-  return roots
-}
-
-function TreeNode({ node, level = 0 }: { node: TreeNode; level?: number }) {
-  const [isOpen, setIsOpen] = useState(false)
-  const hasChildren = node.children.length > 0
-  const Icon = hasChildren ? (isOpen ? ChevronDown : ChevronRight) : node.item.type === 'folder' ? Folder : File
-  const iconColor = node.item.type === 'folder' ? 'text-blue-500' : 'text-gray-500'
-
-  const handleIconClick = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (hasChildren) {
-      setIsOpen(!isOpen)
-    }
+    setExpandedItems(newExpanded)
   }
 
-  const handleItemClick = () => {
-    if (node.item.type === 'folder') {
-      setIsOpen(!isOpen)
-    }
-  }
+  const renderItem = (item: DirectoryItem) => {
+    const isExpanded = expandedItems.has(item.id)
+    const children = itemsMap.get(item.id) || []
+    const hasChildren = children.length > 0
+    const isMatched = matchedItems.includes(item.id)
+    const isCurrentMatch = matchedItems[currentMatchIndex] === item.id
+    const isFolder = item.type === 'folder'
 
-  return (
-    <div>
-      <div
-        className={`flex items-center py-1 px-2 hover:bg-gray-100 cursor-pointer ${
-          level > 0 ? 'ml-4' : ''
-        }`}
-        onClick={handleItemClick}
-      >
+    return (
+      <div key={item.id}>
         <div 
-          className="p-1 hover:bg-gray-200 rounded"
-          onClick={handleIconClick}
+          id={`item-${item.id}`}
+          className={cn(
+            "flex items-center py-1 px-2 rounded hover:bg-accent/50 cursor-pointer",
+            isMatched && "bg-yellow-100 dark:bg-yellow-900/30",
+            isCurrentMatch && "ring-2 ring-primary"
+          )}
+          style={{ paddingLeft: `${item.level * 1.5}rem` }}
+          onClick={() => isFolder && toggleExpand(item.id)}
         >
-          <Icon className={`w-4 h-4 ${iconColor}`} />
+          {isFolder && (
+            <div className="w-4 h-4 mr-1">
+              {hasChildren && (
+                isExpanded ? 
+                  <ChevronDown className="w-4 h-4" /> : 
+                  <ChevronRight className="w-4 h-4" />
+              )}
+            </div>
+          )}
+          {isFolder ? (
+            <Folder className="w-4 h-4 mr-2 text-blue-500" />
+          ) : (
+            <File className="w-4 h-4 mr-2 text-gray-500" />
+          )}
+          <span className={cn(
+            "text-sm",
+            isMatched && "font-medium",
+            isCurrentMatch && "text-primary"
+          )}>
+            {item.name}
+          </span>
         </div>
-        <span className="flex-1 ml-2">{node.item.name}</span>
+        {isFolder && isExpanded && hasChildren && (
+          <div>
+            {children.map(child => renderItem(child))}
+          </div>
+        )}
       </div>
-      {isOpen && hasChildren && (
-        <div className="ml-2">
-          {node.children.map(child => (
-            <TreeNode key={child.item.id} node={child} level={level + 1} />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
+    )
+  }
 
-export function DirectoryTree({ items }: DirectoryTreeProps) {
-  const tree = buildTree(items)
+  const rootItems = itemsMap.get(null) || []
 
   return (
-    <div className="border rounded-lg p-2 bg-white">
-      {tree.map(node => (
-        <TreeNode key={node.item.id} node={node} />
-      ))}
+    <div className="border rounded-lg p-4 bg-background">
+      {rootItems.map(item => renderItem(item))}
     </div>
   )
 } 
