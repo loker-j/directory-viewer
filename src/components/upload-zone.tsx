@@ -94,7 +94,7 @@ export function UploadZone() {
         router.push(`/projects/${data.id}`)
       } catch (error) {
         console.error('API 请求错误:', error)
-        if (error.name === 'AbortError') {
+        if (error instanceof Error && error.name === 'AbortError') {
           throw new Error('处理时间较长，请稍后查看项目列表')
         }
         throw error
