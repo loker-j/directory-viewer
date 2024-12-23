@@ -3,28 +3,32 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 model Project {
-  id        String   @id @default(cuid())
-  name      String
+  id         String   @id @default(cuid())
+  name       String
   shareToken String?  @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  items     Item[]
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  items      Item[]
+
+  @@map("directory_projects")
 }
 
 model Item {
   id        String   @id @default(cuid())
   name      String
-  type      String
+  type      String   @default("file")
   level     Int
-  parentId  String?
+  parentId  String?  @map("parent_id")
   order     Int
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId String
+  projectId String   @map("project_id")
   parent    Item?    @relation("ParentChild", fields: [parentId], references: [id], onDelete: SetNull)
   children  Item[]   @relation("ParentChild")
+
+  @@map("directory_items")
 } 
