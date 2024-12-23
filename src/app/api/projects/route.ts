@@ -56,7 +56,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
   }
 
   try {
-    // 使用事务和批量插入来提高性能
+    // 使用事务和批量插入来提高性能，设置更长的超时时间
     return await prisma.$transaction(async (tx) => {
       // 每次批量插入1000条记录
       const BATCH_SIZE = 1000
@@ -93,10 +93,11 @@ async function processItems(items: DirectoryItem[], projectId: string) {
         }
       }
 
-      // 批量更新父子关系
+      // 批量更新父子关系，使用更小的批次大小来避免超时
       if (updates.length > 0) {
-        for (let i = 0; i < updates.length; i += BATCH_SIZE) {
-          const batch = updates.slice(i, i + BATCH_SIZE)
+        const UPDATE_BATCH_SIZE = 100 // 减小批次大小
+        for (let i = 0; i < updates.length; i += UPDATE_BATCH_SIZE) {
+          const batch = updates.slice(i, i + UPDATE_BATCH_SIZE)
           await Promise.all(
             batch.map(update =>
               tx.item.update(update)
@@ -110,6 +111,8 @@ async function processItems(items: DirectoryItem[], projectId: string) {
         where: { projectId },
         orderBy: { order: 'asc' }
       })
+    }, {
+      timeout: 30000 // 设置事务超时时间为 30 秒
     })
   } catch (error) {
     console.error('批量处理项目时出错:', error)
