@@ -18,6 +18,9 @@ interface CreateItem {
 }
 
 async function processItems(items: DirectoryItem[], projectId: string) {
+  console.log('开始处理目录项，项目ID:', projectId)
+  console.log('输入的目录结构:', JSON.stringify(items, null, 2))
+  
   let order = 0
   const itemsToCreate: CreateItem[] = []
   const parentChildMap = new Map<number, number[]>()
@@ -55,67 +58,84 @@ async function processItems(items: DirectoryItem[], projectId: string) {
     processItem(item)
   }
 
+  console.log('准备创建的项目数量:', itemsToCreate.length)
+  console.log('父子关系映射:', JSON.stringify(Array.from(parentChildMap.entries()), null, 2))
+
   try {
-    // 使用事务和批量插入来提高性能，设置更长的超时时间
-    return await prisma.$transaction(async (tx) => {
-      // 每次批量插入1000条记录
-      const BATCH_SIZE = 1000
-      for (let i = 0; i < itemsToCreate.length; i += BATCH_SIZE) {
-        const batch = itemsToCreate.slice(i, i + BATCH_SIZE)
-        await tx.item.createMany({
-          data: batch
-        })
-      }
-
-      // 获取所有创建的记录
-      const createdItems = await tx.item.findMany({
-        where: { projectId },
-        orderBy: { order: 'asc' }
+    // 分步骤执行，不使用事务
+    console.log('开始批量创建记录...')
+    // 1. 批量创建记录
+    const BATCH_SIZE = 1000
+    for (let i = 0; i < itemsToCreate.length; i += BATCH_SIZE) {
+      const batch = itemsToCreate.slice(i, i + BATCH_SIZE)
+      console.log(`创建第 ${i/BATCH_SIZE + 1} 批记录，数量:`, batch.length)
+      await prisma.item.createMany({
+        data: batch
       })
+    }
 
-      // 更新父子关系
-      const itemMap = new Map(createdItems.map(item => [item.order, item]))
-      const updates: { where: { id: string }, data: { parentId: string } }[] = []
+    // 2. 获取创建的记录
+    console.log('获取已创建的记录...')
+    const createdItems = await prisma.item.findMany({
+      where: { projectId },
+      orderBy: { order: 'asc' }
+    })
+    console.log('成功获取记录，数量:', createdItems.length)
 
-      // 根据 parentChildMap 更新父子关系
-      for (const [parentOrder, childrenOrders] of parentChildMap.entries()) {
-        const parentItem = itemMap.get(parentOrder)
-        if (parentItem) {
-          for (const childOrder of childrenOrders) {
-            const childItem = itemMap.get(childOrder)
-            if (childItem) {
-              updates.push({
-                where: { id: childItem.id },
-                data: { parentId: parentItem.id }
-              })
-            }
+    // 3. 准备更新父子关系
+    const itemMap = new Map(createdItems.map(item => [item.order, item]))
+    const updates: { where: { id: string }, data: { parentId: string } }[] = []
+
+    // 4. 构建更新数据
+    console.log('构建父子关系更新数据...')
+    for (const [parentOrder, childrenOrders] of parentChildMap.entries()) {
+      const parentItem = itemMap.get(parentOrder)
+      if (parentItem) {
+        for (const childOrder of childrenOrders) {
+          const childItem = itemMap.get(childOrder)
+          if (childItem) {
+            updates.push({
+              where: { id: childItem.id },
+              data: { parentId: parentItem.id }
+            })
           }
         }
       }
+    }
+    console.log('需要更新的父子关系数量:', updates.length)
 
-      // 批量更新父子关系，使用更小的批次大小来避免超时
-      if (updates.length > 0) {
-        const UPDATE_BATCH_SIZE = 100 // 减小批次大小
-        for (let i = 0; i < updates.length; i += UPDATE_BATCH_SIZE) {
-          const batch = updates.slice(i, i + UPDATE_BATCH_SIZE)
-          await Promise.all(
-            batch.map(update =>
-              tx.item.update(update)
-            )
+    // 5. 分批执行更新
+    if (updates.length > 0) {
+      console.log('开始更新父子关系...')
+      const UPDATE_BATCH_SIZE = 50 // 使用更小的批次大小
+      for (let i = 0; i < updates.length; i += UPDATE_BATCH_SIZE) {
+        const batch = updates.slice(i, i + UPDATE_BATCH_SIZE)
+        console.log(`更新第 ${i/UPDATE_BATCH_SIZE + 1} 批父子关系，数量:`, batch.length)
+        await Promise.all(
+          batch.map(update =>
+            prisma.item.update(update)
           )
-        }
+        )
       }
+    }
 
-      // 返回更新后的记录
-      return await tx.item.findMany({
-        where: { projectId },
-        orderBy: { order: 'asc' }
-      })
-    }, {
-      timeout: 30000 // 设置事务超时时间为 30 秒
+    // 6. 返回最终结果
+    console.log('获取最终结果...')
+    const finalItems = await prisma.item.findMany({
+      where: { projectId },
+      orderBy: { order: 'asc' }
     })
-  } catch (error) {
+    console.log('处理完成，返回项目数量:', finalItems.length)
+    return finalItems
+
+  } catch (error: any) {
     console.error('批量处理项目时出错:', error)
+    console.error('错误详情:', {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      stack: error.stack
+    })
     throw error
   }
 }
@@ -123,9 +143,15 @@ async function processItems(items: DirectoryItem[], projectId: string) {
 export async function POST(req: Request) {
   console.log('接收到 POST 请求')
   try {
+    console.log('开始解析请求数据...')
     const formData = await req.formData()
     const name = formData.get('name') as string
     const structureStr = formData.get('structure') as string
+    
+    console.log('请求参数:', {
+      name,
+      structureLength: structureStr?.length
+    })
     
     if (!name || !structureStr) {
       console.log('缺少必要参数')
@@ -136,7 +162,9 @@ export async function POST(req: Request) {
 
     let structure: DirectoryItem[]
     try {
+      console.log('解析目录结构数据...')
       structure = JSON.parse(structureStr)
+      console.log('目录结构解析成功')
     } catch (error) {
       console.error('解析结构数据失败:', error)
       return NextResponse.json({ 
@@ -145,14 +173,17 @@ export async function POST(req: Request) {
     }
 
     // 创建项目
+    console.log('开始创建项目...')
     const project = await prisma.project.create({
       data: {
         name,
         updatedAt: new Date(),
       }
     })
+    console.log('项目创建成功:', project)
 
     // 处理目录项
+    console.log('开始处理目录项...')
     const items = await processItems(structure, project.id)
 
     const result = {
@@ -160,10 +191,16 @@ export async function POST(req: Request) {
       items
     }
 
-    console.log('项目创建成功:', result)
+    console.log('项目创建成功，返回结果')
     return NextResponse.json(result)
-  } catch (error) {
+  } catch (error: any) {
     console.error('处理请求时出错:', error)
+    console.error('错误详情:', {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      stack: error.stack
+    })
     
     return NextResponse.json({ 
       message: '创建项目失败',
