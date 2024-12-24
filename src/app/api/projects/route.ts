@@ -22,10 +22,10 @@ async function processItems(items: DirectoryItem[], projectId: string) {
   
   let order = 0
   const itemsToCreate: CreateItem[] = []
-  const parentChildMap = new Map<number, number[]>()
 
-  function processItem(item: DirectoryItem, parentOrder: number | null = null) {
-    const currentOrder = order
+  // 扁平化处理所有项目
+  function flattenItems(item: DirectoryItem) {
+    const currentOrder = order++
     itemsToCreate.push({
       name: item.name,
       type: item.type,
@@ -36,96 +36,91 @@ async function processItems(items: DirectoryItem[], projectId: string) {
     })
 
     if (item.children?.length) {
-      const childrenOrders: number[] = []
-      order++
-      
       for (const child of item.children) {
-        childrenOrders.push(order)
-        processItem(child, currentOrder)
+        flattenItems(child)
       }
-      
-      if (childrenOrders.length > 0) {
-        parentChildMap.set(currentOrder, childrenOrders)
-      }
-    } else {
-      order++
     }
   }
 
   // 处理所有项目
   for (const item of items) {
-    processItem(item)
+    flattenItems(item)
   }
 
   try {
     console.log('开始批量创建记录...')
     
     // 使用更大的批次大小来减少数据库操作次数
-    const BATCH_SIZE = 2000
+    const BATCH_SIZE = 5000
     const chunks: CreateItem[][] = []
     
     // 预先分块
     for (let i = 0; i < itemsToCreate.length; i += BATCH_SIZE) {
       chunks.push(itemsToCreate.slice(i, i + BATCH_SIZE))
     }
-    
-    // 并行处理每个块
+
+    // 串行处理每个块，避免数据库连接过载
     console.log(`分成 ${chunks.length} 个批次处理...`)
-    await Promise.all(
-      chunks.map(async (chunk, index) => {
-        console.log(`处理第 ${index + 1}/${chunks.length} 批`)
-        await prisma.item.createMany({
-          data: chunk,
-          skipDuplicates: true // 跳过重复记录
-        })
+    const createdItems: Array<{
+      id: string
+      order: number
+      level: number
+      type: string
+    }> = []
+    
+    for (let i = 0; i < chunks.length; i++) {
+      console.log(`处理第 ${i + 1}/${chunks.length} 批`)
+      await prisma.item.createMany({
+        data: chunks[i],
+        skipDuplicates: true
       })
-    )
-
-    // 获取创建的记录，使用游标分页来处理大量数据
-    console.log('获取已创建的记录...')
-    const createdItems = await prisma.item.findMany({
-      where: { projectId },
-      orderBy: { order: 'asc' },
-      take: itemsToCreate.length // 限制返回数量
-    })
-    console.log('成功获取记录，数量:', createdItems.length)
-
-    // 构建更新数据
-    console.log('构建父子关系更新数据...')
-    const itemMap = new Map(createdItems.map(item => [item.order, item]))
-    const updates: { id: string, parentId: string }[] = []
-
-    for (const [parentOrder, childrenOrders] of parentChildMap.entries()) {
-      const parentItem = itemMap.get(parentOrder)
-      if (parentItem) {
-        for (const childOrder of childrenOrders) {
-          const childItem = itemMap.get(childOrder)
-          if (childItem) {
-            updates.push({
-              id: childItem.id,
-              parentId: parentItem.id
-            })
+      
+      // 获取这批次创建的记录
+      const batchItems = await prisma.item.findMany({
+        where: {
+          projectId,
+          order: {
+            in: chunks[i].map(item => item.order)
           }
+        },
+        select: {
+          id: true,
+          order: true,
+          level: true,
+          type: true
+        }
+      })
+      createdItems.push(...batchItems)
+    }
+
+    // 按 order 排序所有项目
+    createdItems.sort((a, b) => a.order - b.order)
+
+    // 更新父子关系
+    const updates: { id: string, parentId: string }[] = []
+    
+    for (let i = 0; i < createdItems.length; i++) {
+      const current = createdItems[i]
+      if (current.level === 0) continue // 根级别项目不需要父项
+
+      // 向前查找第一个 level 比当前小的项目作为父项
+      for (let j = i - 1; j >= 0; j--) {
+        const potential = createdItems[j]
+        if (potential.level < current.level && potential.type === 'folder') {
+          updates.push({
+            id: current.id,
+            parentId: potential.id
+          })
+          break
         }
       }
     }
 
-    // 使用事务批量更新父子关系
+    // 分批执行更新
     if (updates.length > 0) {
-      console.log('开始更新父子关系...')
-      const UPDATE_BATCH_SIZE = 500 // 增加批次大小
-      const updateChunks: typeof updates[] = []
-      
+      const UPDATE_BATCH_SIZE = 1000
       for (let i = 0; i < updates.length; i += UPDATE_BATCH_SIZE) {
-        updateChunks.push(updates.slice(i, i + UPDATE_BATCH_SIZE))
-      }
-
-      // 串行处理更新批次
-      for (let i = 0; i < updateChunks.length; i++) {
-        const chunk = updateChunks[i]
-        console.log(`更新第 ${i + 1}/${updateChunks.length} 批父子关系`)
-        
-        // 构建批量更新 SQL
+        const chunk = updates.slice(i, i + UPDATE_BATCH_SIZE)
         const values = chunk.map(update => `('${update.id}', '${update.parentId}')`).join(',')
         const sql = `
           UPDATE directory_items AS t
@@ -133,30 +128,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
           FROM (VALUES ${values}) AS c(id, parent_id)
           WHERE t.id = c.id;
         `
-        
-        // 添加重试机制
-        let retryCount = 0
-        const maxRetries = 3
-        
-        while (retryCount < maxRetries) {
-          try {
-            await prisma.$executeRawUnsafe(sql)
-            break // 如果成功，跳出重试循环
-          } catch (error: any) {
-            retryCount++
-            console.log(`第 ${i + 1} 批更新失败，尝试第 ${retryCount} 次重试...`)
-            
-            if (retryCount === maxRetries) {
-              throw error // 如果达到最大重试次数，抛出错误
-            }
-            
-            // 等待一段时间后重试
-            await new Promise(resolve => setTimeout(resolve, 1000 * retryCount))
-          }
-        }
-        
-        // 每批次处理完后等待一小段时间
-        await new Promise(resolve => setTimeout(resolve, 100))
+        await prisma.$executeRawUnsafe(sql)
       }
     }
 
@@ -164,18 +136,11 @@ async function processItems(items: DirectoryItem[], projectId: string) {
     console.log('获取最终结果...')
     return await prisma.item.findMany({
       where: { projectId },
-      orderBy: { order: 'asc' },
-      take: itemsToCreate.length
+      orderBy: { order: 'asc' }
     })
 
   } catch (error: any) {
     console.error('批量处理项目时出错:', error)
-    console.error('错误详情:', {
-      name: error.name,
-      message: error.message,
-      code: error.code,
-      stack: error.stack
-    })
     throw error
   }
 }
