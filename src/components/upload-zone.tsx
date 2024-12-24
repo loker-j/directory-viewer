@@ -89,21 +89,30 @@ export function UploadZone() {
       console.log('解析后的目录结构:', processedItems)
 
       // 分批上传数据
-      const UPLOAD_BATCH_SIZE = 1000 // 减小每批上传的数量
+      const ITEMS_PER_BATCH = 800 // 调整为更合理的批次大小
       const totalItems = processedItems.length
       let projectId: string | null = null
       let retryCount = 0
       const maxRetries = 3
       
-      for (let i = 0; i < processedItems.length; i += UPLOAD_BATCH_SIZE) {
-        const batchItems = processedItems.slice(i, i + UPLOAD_BATCH_SIZE)
-        const isFirstBatch = i === 0
-        const isLastBatch = i + UPLOAD_BATCH_SIZE >= processedItems.length
-        const batchNumber = Math.floor(i / UPLOAD_BATCH_SIZE) + 1
-        const totalBatches = Math.ceil(processedItems.length / UPLOAD_BATCH_SIZE)
+      // 预处理：将所有项目分组
+      const batches: DirectoryItem[][] = []
+      for (let i = 0; i < processedItems.length; i += ITEMS_PER_BATCH) {
+        batches.push(processedItems.slice(i, i + ITEMS_PER_BATCH))
+      }
+      const totalBatches = batches.length
+
+      // 串行处理每个批次
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batchItems = batches[batchIndex]
+        const batchNumber = batchIndex + 1
+        const isFirstBatch = batchIndex === 0
+        const isLastBatch = batchIndex === batches.length - 1
 
         // 重试逻辑
         let success = false
+        retryCount = 0 // 每个批次重置重试计数
+        
         while (!success && retryCount < maxRetries) {
           try {
             const formData = new FormData()
@@ -136,6 +145,8 @@ export function UploadZone() {
               projectId = data.id
             }
 
+            // 每批处理成功后等待一小段时间，避免请求过于频繁
+            await new Promise(resolve => setTimeout(resolve, 500))
             success = true
           } catch (error) {
             retryCount++
@@ -148,7 +159,7 @@ export function UploadZone() {
         }
 
         // 更新上传进度（50-99%）
-        const uploadProgress = 50 + Math.round((i + UPLOAD_BATCH_SIZE) / processedItems.length * 49)
+        const uploadProgress = 50 + Math.round((batchIndex + 1) / totalBatches * 49)
         setProgress(Math.min(uploadProgress, 99))
       }
 
