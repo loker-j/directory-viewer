@@ -50,8 +50,8 @@ async function processItems(items: DirectoryItem[], projectId: string) {
   try {
     console.log('开始批量创建记录...')
     
-    // 使用更大的批次大小来减少数据库��作次数
-    const BATCH_SIZE = 5000
+    // 减小批次大小
+    const BATCH_SIZE = 1000
     const chunks: CreateItem[][] = []
     
     // 预先分块
@@ -91,44 +91,45 @@ async function processItems(items: DirectoryItem[], projectId: string) {
         }
       })
       createdItems.push(...batchItems)
-    }
 
-    // 按 order 排序所有项目
-    createdItems.sort((a, b) => a.order - b.order)
+      // 每批次处理完后立即更新父子关系
+      if (batchItems.length > 0) {
+        const updates: { id: string, parentId: string }[] = []
+        const sortedBatchItems = [...batchItems].sort((a, b) => a.order - b.order)
+        
+        for (let j = 0; j < sortedBatchItems.length; j++) {
+          const current = sortedBatchItems[j]
+          if (current.level === 0) continue
 
-    // 更新父子关系
-    const updates: { id: string, parentId: string }[] = []
-    
-    for (let i = 0; i < createdItems.length; i++) {
-      const current = createdItems[i]
-      if (current.level === 0) continue // 根级别项目不需要父项
-
-      // 向前查找第一个 level 比当前小的项目作为父项
-      for (let j = i - 1; j >= 0; j--) {
-        const potential = createdItems[j]
-        if (potential.level < current.level && potential.type === 'folder') {
-          updates.push({
-            id: current.id,
-            parentId: potential.id
-          })
-          break
+          // 在所有已创建的项目中查找父项
+          const allItems = [...createdItems].sort((a, b) => a.order - b.order)
+          for (let k = allItems.indexOf(current) - 1; k >= 0; k--) {
+            const potential = allItems[k]
+            if (potential.level < current.level && potential.type === 'folder') {
+              updates.push({
+                id: current.id,
+                parentId: potential.id
+              })
+              break
+            }
+          }
         }
-      }
-    }
 
-    // 分批执行更新
-    if (updates.length > 0) {
-      const UPDATE_BATCH_SIZE = 1000
-      for (let i = 0; i < updates.length; i += UPDATE_BATCH_SIZE) {
-        const chunk = updates.slice(i, i + UPDATE_BATCH_SIZE)
-        const values = chunk.map(update => `('${update.id}', '${update.parentId}')`).join(',')
-        const sql = `
-          UPDATE directory_items AS t
-          SET parent_id = c.parent_id
-          FROM (VALUES ${values}) AS c(id, parent_id)
-          WHERE t.id = c.id;
-        `
-        await prisma.$executeRawUnsafe(sql)
+        // 分批执行更新
+        if (updates.length > 0) {
+          const UPDATE_BATCH_SIZE = 500
+          for (let j = 0; j < updates.length; j += UPDATE_BATCH_SIZE) {
+            const updateChunk = updates.slice(j, j + UPDATE_BATCH_SIZE)
+            const values = updateChunk.map(update => `('${update.id}', '${update.parentId}')`).join(',')
+            const sql = `
+              UPDATE directory_items AS t
+              SET parent_id = c.parent_id
+              FROM (VALUES ${values}) AS c(id, parent_id)
+              WHERE t.id = c.id;
+            `
+            await prisma.$executeRawUnsafe(sql)
+          }
+        }
       }
     }
 
@@ -155,13 +156,17 @@ export async function POST(req: Request) {
     const projectId = formData.get('projectId') as string
     const isLastBatch = formData.get('isLastBatch') === 'true'
     const totalItems = parseInt(formData.get('totalItems') as string || '0')
+    const batchNumber = parseInt(formData.get('batchNumber') as string || '1')
+    const totalBatches = parseInt(formData.get('totalBatches') as string || '1')
     
     console.log('请求参数:', {
       name,
       structureLength: structureStr?.length,
       projectId,
       isLastBatch,
-      totalItems
+      totalItems,
+      batchNumber,
+      totalBatches
     })
     
     if (!structureStr) {
@@ -214,7 +219,7 @@ export async function POST(req: Request) {
     }
 
     // 处理目录项
-    console.log('开始处理目录项...')
+    console.log(`开始处理第 ${batchNumber}/${totalBatches} 批目录项...`)
     const items = await processItems(structure, project.id)
 
     const result = {
@@ -222,7 +227,7 @@ export async function POST(req: Request) {
       items: isLastBatch ? items : undefined // 只在最后一批返回完整的项目数据
     }
 
-    console.log('批次处理成功')
+    console.log(`第 ${batchNumber}/${totalBatches} 批处理成功`)
     return NextResponse.json(result)
   } catch (error: any) {
     console.error('处理请求时出错:', error)

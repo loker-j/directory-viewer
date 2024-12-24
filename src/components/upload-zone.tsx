@@ -89,41 +89,62 @@ export function UploadZone() {
       console.log('解析后的目录结构:', processedItems)
 
       // 分批上传数据
-      const UPLOAD_BATCH_SIZE = 3000 // 每批上传的项目数
+      const UPLOAD_BATCH_SIZE = 1000 // 减小每批上传的数量
       const totalItems = processedItems.length
       let projectId: string | null = null
+      let retryCount = 0
+      const maxRetries = 3
       
       for (let i = 0; i < processedItems.length; i += UPLOAD_BATCH_SIZE) {
         const batchItems = processedItems.slice(i, i + UPLOAD_BATCH_SIZE)
         const isFirstBatch = i === 0
         const isLastBatch = i + UPLOAD_BATCH_SIZE >= processedItems.length
+        const batchNumber = Math.floor(i / UPLOAD_BATCH_SIZE) + 1
+        const totalBatches = Math.ceil(processedItems.length / UPLOAD_BATCH_SIZE)
 
-        const formData = new FormData()
-        if (isFirstBatch) {
-          formData.append('name', file.name.replace(/\.[^/.]+$/, ''))
-        }
-        formData.append('structure', JSON.stringify(batchItems))
-        if (projectId) {
-          formData.append('projectId', projectId)
-        }
-        formData.append('isLastBatch', String(isLastBatch))
-        formData.append('totalItems', String(totalItems))
+        // 重试逻辑
+        let success = false
+        while (!success && retryCount < maxRetries) {
+          try {
+            const formData = new FormData()
+            if (isFirstBatch) {
+              formData.append('name', file.name.replace(/\.[^/.]+$/, ''))
+            }
+            formData.append('structure', JSON.stringify(batchItems))
+            if (projectId) {
+              formData.append('projectId', projectId)
+            }
+            formData.append('isLastBatch', String(isLastBatch))
+            formData.append('totalItems', String(totalItems))
+            formData.append('batchNumber', String(batchNumber))
+            formData.append('totalBatches', String(totalBatches))
 
-        console.log(`发送第 ${Math.floor(i / UPLOAD_BATCH_SIZE) + 1} 批数据到服务器...`)
-        const response = await fetch('/api/projects', {
-          method: 'POST',
-          body: formData,
-        })
+            console.log(`发送第 ${batchNumber}/${totalBatches} 批数据到服务器...`)
+            const response = await fetch('/api/projects', {
+              method: 'POST',
+              body: formData,
+            })
 
-        if (!response.ok) {
-          const data = await response.json()
-          console.error('服务器返回错误:', data)
-          throw new Error(data.message || data.error || '上传失败')
-        }
+            if (!response.ok) {
+              const data = await response.json()
+              console.error('服务器返回错误:', data)
+              throw new Error(data.message || data.error || '上传失败')
+            }
 
-        const data = await response.json()
-        if (isFirstBatch) {
-          projectId = data.id
+            const data = await response.json()
+            if (isFirstBatch) {
+              projectId = data.id
+            }
+
+            success = true
+          } catch (error) {
+            retryCount++
+            if (retryCount >= maxRetries) {
+              throw error
+            }
+            console.log(`第 ${batchNumber} 批上传失败，等待重试...`)
+            await new Promise(resolve => setTimeout(resolve, 2000 * retryCount))
+          }
         }
 
         // 更新上传进度（50-99%）
