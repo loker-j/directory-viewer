@@ -6,7 +6,14 @@ import { Button } from '@/components/ui/button'
 import { parseDirectoryText } from '@/lib/parse-directory'
 import { formatFileSize } from '@/lib/utils'
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+interface DirectoryItem {
+  name: string
+  type: string
+  level: number
+  children?: DirectoryItem[]
+}
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const CHUNK_SIZE = 1024 * 1024; // 1MB
 
 export function UploadZone() {
@@ -63,16 +70,31 @@ export function UploadZone() {
       const text = await readFileInChunks(file)
       console.log('文件读取完成')
 
-      const items = parseDirectoryText(text)
-      console.log('解析后的目录结构:', items)
+      // 分块处理大文件
+      const CHUNK_SIZE = 10000 // 每次处理的行数
+      const lines = text.split('\n')
+      const totalChunks = Math.ceil(lines.length / CHUNK_SIZE)
+      let processedItems: DirectoryItem[] = []
+
+      for (let i = 0; i < lines.length; i += CHUNK_SIZE) {
+        const chunk = lines.slice(i, i + CHUNK_SIZE).join('\n')
+        const chunkItems = parseDirectoryText(chunk)
+        processedItems = processedItems.concat(chunkItems)
+        
+        // 更新进度
+        const progress = Math.round((i + CHUNK_SIZE) / lines.length * 100)
+        setProgress(Math.min(progress, 99)) // 保留最后1%给上传过程
+      }
+
+      console.log('解析后的目录结构:', processedItems)
 
       const formData = new FormData()
       formData.append('name', file.name.replace(/\.[^/.]+$/, ''))
-      formData.append('structure', JSON.stringify(items))
+      formData.append('structure', JSON.stringify(processedItems))
 
       console.log('发送请求到服务器...')
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 300000)
+      const timeoutId = setTimeout(() => controller.abort(), 300000) // 5分钟超时
 
       try {
         const response = await fetch('/api/projects', {
@@ -83,14 +105,22 @@ export function UploadZone() {
 
         clearTimeout(timeoutId)
         console.log('服务器响应状态:', response.status)
-        const data = await response.json()
         
+        // 检查响应状态
         if (!response.ok) {
+          const data = await response.json()
           console.error('服务器返回错误:', data)
           throw new Error(data.message || data.error || '上传失败')
         }
 
+        // 完成进度
+        setProgress(100)
+        
+        const data = await response.json()
         console.log('创建项目成功:', data)
+        
+        // 延迟跳转，让用户看到100%进度
+        await new Promise(resolve => setTimeout(resolve, 500))
         router.push(`/projects/${data.id}`)
       } catch (error) {
         console.error('API 请求错误:', error)
