@@ -82,52 +82,62 @@ export function UploadZone() {
         processedItems = processedItems.concat(chunkItems)
         
         // 更新进度
-        const progress = Math.round((i + CHUNK_SIZE) / lines.length * 100)
-        setProgress(Math.min(progress, 99)) // 保留最后1%给上传过程
+        const progress = Math.round((i + CHUNK_SIZE) / lines.length * 50) // 解析阶段占50%
+        setProgress(Math.min(progress, 49))
       }
 
       console.log('解析后的目录结构:', processedItems)
 
-      const formData = new FormData()
-      formData.append('name', file.name.replace(/\.[^/.]+$/, ''))
-      formData.append('structure', JSON.stringify(processedItems))
+      // 分批上传数据
+      const UPLOAD_BATCH_SIZE = 3000 // 每批上传的项目数
+      const totalItems = processedItems.length
+      let projectId: string | null = null
+      
+      for (let i = 0; i < processedItems.length; i += UPLOAD_BATCH_SIZE) {
+        const batchItems = processedItems.slice(i, i + UPLOAD_BATCH_SIZE)
+        const isFirstBatch = i === 0
+        const isLastBatch = i + UPLOAD_BATCH_SIZE >= processedItems.length
 
-      console.log('发送请求到服务器...')
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 300000) // 5分钟超时
+        const formData = new FormData()
+        if (isFirstBatch) {
+          formData.append('name', file.name.replace(/\.[^/.]+$/, ''))
+        }
+        formData.append('structure', JSON.stringify(batchItems))
+        if (projectId) {
+          formData.append('projectId', projectId)
+        }
+        formData.append('isLastBatch', String(isLastBatch))
+        formData.append('totalItems', String(totalItems))
 
-      try {
+        console.log(`发送第 ${Math.floor(i / UPLOAD_BATCH_SIZE) + 1} 批数据到服务器...`)
         const response = await fetch('/api/projects', {
           method: 'POST',
           body: formData,
-          signal: controller.signal,
         })
 
-        clearTimeout(timeoutId)
-        console.log('服务器响应状态:', response.status)
-        
-        // 检查响应状态
         if (!response.ok) {
           const data = await response.json()
           console.error('服务器返回错误:', data)
           throw new Error(data.message || data.error || '上传失败')
         }
 
-        // 完成进度
-        setProgress(100)
-        
         const data = await response.json()
-        console.log('创建项目成功:', data)
-        
-        // 延迟跳转，让用户看到100%进度
-        await new Promise(resolve => setTimeout(resolve, 500))
-        router.push(`/projects/${data.id}`)
-      } catch (error) {
-        console.error('API 请求错误:', error)
-        if (error instanceof Error && error.name === 'AbortError') {
-          throw new Error('处理时间较长，请稍后查看项目列表')
+        if (isFirstBatch) {
+          projectId = data.id
         }
-        throw error
+
+        // 更新上传进度（50-99%）
+        const uploadProgress = 50 + Math.round((i + UPLOAD_BATCH_SIZE) / processedItems.length * 49)
+        setProgress(Math.min(uploadProgress, 99))
+      }
+
+      // 完成进度
+      setProgress(100)
+      
+      // 延迟跳转，让用户看到100%进度
+      await new Promise(resolve => setTimeout(resolve, 500))
+      if (projectId) {
+        router.push(`/projects/${projectId}`)
       }
     } catch (error) {
       console.error('处理文件时出错:', error)

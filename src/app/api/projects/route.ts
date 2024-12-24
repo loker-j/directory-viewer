@@ -50,7 +50,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
   try {
     console.log('开始批量创建记录...')
     
-    // 使用更大的批次大小来减少数据库操作次数
+    // 使用更大的批次大小来减少数据库��作次数
     const BATCH_SIZE = 5000
     const chunks: CreateItem[][] = []
     
@@ -152,13 +152,19 @@ export async function POST(req: Request) {
     const formData = await req.formData()
     const name = formData.get('name') as string
     const structureStr = formData.get('structure') as string
+    const projectId = formData.get('projectId') as string
+    const isLastBatch = formData.get('isLastBatch') === 'true'
+    const totalItems = parseInt(formData.get('totalItems') as string || '0')
     
     console.log('请求参数:', {
       name,
-      structureLength: structureStr?.length
+      structureLength: structureStr?.length,
+      projectId,
+      isLastBatch,
+      totalItems
     })
     
-    if (!name || !structureStr) {
+    if (!structureStr) {
       console.log('缺少必要参数')
       return NextResponse.json({ 
         message: '缺少必要的参数'
@@ -177,15 +183,35 @@ export async function POST(req: Request) {
       }, { status: 400 })
     }
 
-    // 创建项目
-    console.log('开始创建项目...')
-    const project = await prisma.project.create({
-      data: {
-        name,
-        updatedAt: new Date(),
+    let project
+    if (!projectId) {
+      // 首次请求，创建新项目
+      if (!name) {
+        return NextResponse.json({ 
+          message: '缺少项目名称'
+        }, { status: 400 })
       }
-    })
-    console.log('项目创建成功:', project)
+      
+      console.log('开始创建项目...')
+      project = await prisma.project.create({
+        data: {
+          name,
+          updatedAt: new Date(),
+        }
+      })
+      console.log('项目创建成功:', project)
+    } else {
+      // 后续请求，获取已存在的项目
+      project = await prisma.project.findUnique({
+        where: { id: projectId }
+      })
+      
+      if (!project) {
+        return NextResponse.json({ 
+          message: '项目不存在'
+        }, { status: 404 })
+      }
+    }
 
     // 处理目录项
     console.log('开始处理目录项...')
@@ -193,10 +219,10 @@ export async function POST(req: Request) {
 
     const result = {
       ...project,
-      items
+      items: isLastBatch ? items : undefined // 只在最后一批返回完整的项目数据
     }
 
-    console.log('项目创建成功，返回结果')
+    console.log('批次处理成功')
     return NextResponse.json(result)
   } catch (error: any) {
     console.error('处理请求时出错:', error)
