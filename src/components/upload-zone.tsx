@@ -82,15 +82,18 @@ export function UploadZone() {
         processedItems = processedItems.concat(chunkItems)
         
         // 更新进度
-        const progress = Math.round((i + CHUNK_SIZE) / lines.length * 50) // 解析阶段占50%
+        const progress = Math.round((i + CHUNK_SIZE) / lines.length * 50)
         setProgress(Math.min(progress, 49))
       }
 
       console.log('解析后的目录结构:', processedItems)
+      console.log('实际项目数量:', processedItems.length)
 
       // 分批上传数据
-      const ITEMS_PER_BATCH = 800 // 调整为更合理的批次大小
+      const ITEMS_PER_BATCH = 200 // 调整为更保守的值
       const totalItems = processedItems.length
+      console.log('预计分批数量:', Math.ceil(totalItems / ITEMS_PER_BATCH))
+      
       let projectId: string | null = null
       let retryCount = 0
       const maxRetries = 3
@@ -101,10 +104,12 @@ export function UploadZone() {
         batches.push(processedItems.slice(i, i + ITEMS_PER_BATCH))
       }
       const totalBatches = batches.length
+      console.log('实际分批数量:', totalBatches, '每批大小:', ITEMS_PER_BATCH)
 
       // 串行处理每个批次
       for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
         const batchItems = batches[batchIndex]
+        console.log(`准备发送第 ${batchIndex + 1}/${totalBatches} 批，项目数量:`, batchItems.length)
         const batchNumber = batchIndex + 1
         const isFirstBatch = batchIndex === 0
         const isLastBatch = batchIndex === batches.length - 1

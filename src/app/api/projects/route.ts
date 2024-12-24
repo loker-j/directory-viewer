@@ -19,6 +19,7 @@ interface CreateItem {
 
 async function processItems(items: DirectoryItem[], projectId: string) {
   console.log('开始处理目录项，项目ID:', projectId)
+  console.log('输入项目数量:', items.length)
   
   let order = 0
   const itemsToCreate: CreateItem[] = []
@@ -46,6 +47,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
   for (const item of items) {
     flattenItems(item)
   }
+  console.log('扁平化后的项目数量:', itemsToCreate.length)
 
   try {
     console.log('开始批量创建记录...')
@@ -55,6 +57,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
       data: itemsToCreate,
       skipDuplicates: true
     })
+    console.log('成功创建记录数量:', createdItems.count)
 
     // 获取创建的记录
     const items = await prisma.item.findMany({
@@ -74,6 +77,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
         order: 'asc'
       }
     })
+    console.log('查询到的记录数量:', items.length)
 
     // 更新父子关系
     const updates: { id: string, parentId: string }[] = []
@@ -94,6 +98,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
         }
       }
     }
+    console.log('需要更新父子关系的数量:', updates.length)
 
     // 执行更新
     if (updates.length > 0) {
@@ -105,6 +110,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
         WHERE t.id = c.id;
       `
       await prisma.$executeRawUnsafe(sql)
+      console.log('父子关系更新完成')
     }
 
     // 返回处理结果
