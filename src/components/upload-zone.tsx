@@ -69,28 +69,17 @@ export function UploadZone() {
       setProgress(0)
       const text = await readFileInChunks(file)
       console.log('文件读取完成')
+      setProgress(25)
 
-      // 分块处理大文件
-      const CHUNK_SIZE = 10000 // 每次处理的行数
-      const lines = text.split('\n')
-      const totalChunks = Math.ceil(lines.length / CHUNK_SIZE)
-      let processedItems: DirectoryItem[] = []
-
-      for (let i = 0; i < lines.length; i += CHUNK_SIZE) {
-        const chunk = lines.slice(i, i + CHUNK_SIZE).join('\n')
-        const chunkItems = parseDirectoryText(chunk)
-        processedItems = processedItems.concat(chunkItems)
-        
-        // 更新进度
-        const progress = Math.round((i + CHUNK_SIZE) / lines.length * 50)
-        setProgress(Math.min(progress, 49))
-      }
-
+      // 直接解析整个文件
+      console.log('开始解析目录结构...')
+      const processedItems = parseDirectoryText(text)
       console.log('解析后的目录结构:', processedItems)
       console.log('实际项目数量:', processedItems.length)
+      setProgress(50)
 
       // 分批上传数据
-      const ITEMS_PER_BATCH = 200 // 调整为更保守的值
+      const ITEMS_PER_BATCH = 200 // 每批处理的项目数
       const totalItems = processedItems.length
       console.log('预计分批数量:', Math.ceil(totalItems / ITEMS_PER_BATCH))
       
