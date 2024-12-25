@@ -22,7 +22,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
   console.log('输入项目数量:', items.length)
   
   const itemsToCreate: CreateItem[] = []
-  const parentChildMap = new Map<string, string>() // 使用临时ID记录父子关系
+  const parentChildMap = new Map<string, string>()
   let tempId = 0
 
   // 扁平化处理所有项目
@@ -56,71 +56,59 @@ async function processItems(items: DirectoryItem[], projectId: string) {
   console.log('扁平化后的项目数量:', itemsToCreate.length)
 
   try {
-    // 分批处理，每批100个
-    const BATCH_SIZE = 100
+    // 分批处理，增加批处理大小
+    const BATCH_SIZE = 500
     const batches: CreateItem[][] = []
     for (let i = 0; i < itemsToCreate.length; i += BATCH_SIZE) {
       batches.push(itemsToCreate.slice(i, i + BATCH_SIZE))
     }
     console.log(`分成 ${batches.length} 个批次处理...`)
 
-    const createdItems: Array<{ id: string, order: number }> = []
-    
     // 串行处理每个批次
     for (let i = 0; i < batches.length; i++) {
       console.log(`处理第 ${i + 1}/${batches.length} 批`)
-      // 创建记录
       await prisma.item.createMany({
         data: batches[i],
         skipDuplicates: true
       })
-
-      // 获取这批次创建的记录
-      const batchItems = await prisma.item.findMany({
-        where: {
-          projectId,
-          order: {
-            in: batches[i].map(item => item.order)
-          }
-        },
-        select: {
-          id: true,
-          order: true
-        }
-      })
-      createdItems.push(...batchItems)
     }
 
-    // 构建 order 到 id 的映射
-    const orderToId = new Map(createdItems.map(item => [item.order, item.id]))
-    const tempIdToId = new Map<string, string>()
-
-    // 构建临时ID到实际ID的映射
-    itemsToCreate.forEach((item, index) => {
-      const id = orderToId.get(item.order)
-      if (id) {
-        tempIdToId.set(`temp_${index}`, id)
+    // 一次性获取所有创建的记录
+    const createdItems = await prisma.item.findMany({
+      where: {
+        projectId,
+        order: {
+          in: itemsToCreate.map(item => item.order)
+        }
+      },
+      select: {
+        id: true,
+        order: true
+      },
+      orderBy: {
+        order: 'asc'
       }
+    })
+
+    // 构建映射
+    const tempIdToId = new Map<string, string>()
+    createdItems.forEach((item, index) => {
+      tempIdToId.set(`temp_${index}`, item.id)
     })
 
     // 更新父子关系
     const updates: { id: string, parentId: string }[] = []
-    
     for (const [childTempId, parentTempId] of parentChildMap.entries()) {
       const childId = tempIdToId.get(childTempId)
       const parentId = tempIdToId.get(parentTempId)
-      
       if (childId && parentId) {
-        updates.push({
-          id: childId,
-          parentId: parentId
-        })
+        updates.push({ id: childId, parentId })
       }
     }
     console.log('需要更新父子关系的数量:', updates.length)
 
-    // 分批执行更新
-    const UPDATE_BATCH_SIZE = 100
+    // 分批执行更新，增加批处理大小
+    const UPDATE_BATCH_SIZE = 500
     for (let i = 0; i < updates.length; i += UPDATE_BATCH_SIZE) {
       const batch = updates.slice(i, i + UPDATE_BATCH_SIZE)
       const values = batch.map(update => `('${update.id}', '${update.parentId}')`).join(',')
@@ -135,10 +123,7 @@ async function processItems(items: DirectoryItem[], projectId: string) {
     console.log('父子关系更新完成')
 
     // 返回处理结果
-    return await prisma.item.findMany({
-      where: { projectId },
-      orderBy: { order: 'asc' }
-    })
+    return createdItems
   } catch (error: any) {
     console.error('批量处理项目时出错:', error)
     throw error
@@ -179,7 +164,7 @@ export async function POST(req: Request) {
     try {
       console.log('解析目录结构数据...')
       structure = JSON.parse(structureStr)
-      console.log('目��结构解析成功')
+      console.log('目录结构解析成功')
     } catch (error) {
       console.error('解析结构数据失败:', error)
       return NextResponse.json({ 
