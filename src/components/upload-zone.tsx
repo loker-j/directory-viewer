@@ -16,11 +16,23 @@ interface DirectoryItem {
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const CHUNK_SIZE = 1024 * 1024; // 1MB
 
+// 添加进度状态接口
+interface ProgressStatus {
+  stage: '读取文件' | '解析结构' | '处理数据' | '完成'
+  progress: number
+  currentBatch?: number
+  totalBatches?: number
+  detail?: string
+}
+
 export function UploadZone() {
   const router = useRouter()
   const [isDragging, setIsDragging] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
-  const [progress, setProgress] = useState(0)
+  const [progressStatus, setProgressStatus] = useState<ProgressStatus>({
+    stage: '读取文件',
+    progress: 0
+  })
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -47,7 +59,11 @@ export function UploadZone() {
       const blob = file.slice(start, end)
       const chunkText = await blob.text()
       currentChunk++
-      setProgress(Math.floor((currentChunk / totalChunks) * 100))
+      setProgressStatus({
+        stage: '读取文件',
+        progress: Math.floor((currentChunk / totalChunks) * 100),
+        detail: `${formatFileSize(end)} / ${formatFileSize(file.size)}`
+      })
       return chunkText
     }
 
@@ -66,16 +82,24 @@ export function UploadZone() {
         throw new Error(`文件大小超过限制 (最大 ${formatFileSize(MAX_FILE_SIZE)})`)
       }
 
-      setProgress(0)
+      // 读取文件
+      setProgressStatus({ stage: '读取文件', progress: 0 })
       const text = await readFileInChunks(file)
       console.log('文件读取完成')
-      setProgress(25)
 
-      // 解析整个目录结构
+      // 解析结构
+      setProgressStatus({ stage: '解析结构', progress: 0 })
       console.log('开始解析目录结构...')
       const rootItems = parseDirectoryText(text)
       console.log('解析后的目录结构:', rootItems)
-      setProgress(50)
+      setProgressStatus({ stage: '解析结构', progress: 100 })
+
+      // 扁平化处理
+      setProgressStatus({ 
+        stage: '处理数据', 
+        progress: 0,
+        detail: '扁平化处理中...'
+      })
 
       // 扁平化处理，同时保存父子关系
       interface FlatItem {
@@ -121,6 +145,14 @@ export function UploadZone() {
       let projectId: string | null = null
       
       for (let i = 0; i < batches.length; i++) {
+        setProgressStatus({
+          stage: '处理数据',
+          progress: Math.floor((i / batches.length) * 100),
+          currentBatch: i + 1,
+          totalBatches: batches.length,
+          detail: `正在处理第 ${i + 1}/${batches.length} 批`
+        })
+
         const formData = new FormData()
         if (i === 0) {
           formData.append('name', file.name.replace(/\.[^/.]+$/, ''))
@@ -133,7 +165,6 @@ export function UploadZone() {
         formData.append('totalBatches', String(batches.length))
         formData.append('isLastBatch', String(i === batches.length - 1))
 
-        // 添加重试逻辑
         let retryCount = 0
         const maxRetries = 3
         
@@ -159,23 +190,20 @@ export function UploadZone() {
             console.error(`第 ${i + 1} 批处理失败:`, error)
             retryCount++
             if (retryCount === maxRetries) throw error
-            // 指数退避重试
             await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000))
           }
         }
 
-        // 更新进度
-        setProgress(50 + Math.floor((i + 1) / batches.length * 50))
-        
-        // 每批处理后等待一段时间，避免触发限制
         await new Promise(resolve => setTimeout(resolve, 1000))
       }
 
-      // 完成进度
-      setProgress(100)
+      setProgressStatus({
+        stage: '完成',
+        progress: 100,
+        detail: '处理完成，即将跳转...'
+      })
 
-      // 延迟跳转，让用户看到100%进度
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise(resolve => setTimeout(resolve, 1000))
       if (projectId) {
         router.push(`/projects/${projectId}`)
       }
@@ -193,8 +221,6 @@ export function UploadZone() {
 
     try {
       const file = e.dataTransfer.files[0]
-      console.log('拖放的文件:', file?.name)
-      
       if (!file) {
         throw new Error('请上传文件')
       }
@@ -207,7 +233,7 @@ export function UploadZone() {
       alert(error instanceof Error ? error.message : '上传失败')
     } finally {
       setIsProcessing(false)
-      setProgress(0)
+      setProgressStatus({ stage: '读取文件', progress: 0 })
     }
   }, [router])
 
@@ -226,10 +252,43 @@ export function UploadZone() {
       alert(error instanceof Error ? error.message : '上传失败')
     } finally {
       setIsProcessing(false)
-      setProgress(0)
+      setProgressStatus({ stage: '读取文件', progress: 0 })
       e.target.value = ''
     }
   }, [router])
+
+  const renderProgress = () => (
+    <div className="space-y-4">
+      <div className="space-y-2 text-center">
+        <p className="text-sm text-muted-foreground">
+          {progressStatus.stage}... {progressStatus.progress}%
+        </p>
+        {progressStatus.detail && (
+          <p className="text-xs text-muted-foreground">
+            {progressStatus.detail}
+          </p>
+        )}
+        {progressStatus.currentBatch && progressStatus.totalBatches && (
+          <div className="w-full bg-secondary rounded-full h-2.5 dark:bg-gray-700">
+            <div 
+              className="bg-primary h-2.5 rounded-full transition-all duration-300" 
+              style={{ width: `${progressStatus.progress}%` }}
+            />
+          </div>
+        )}
+      </div>
+      <div className="flex justify-center">
+        <Button 
+          type="button"
+          size="lg" 
+          disabled
+          className="cursor-not-allowed"
+        >
+          处理中...
+        </Button>
+      </div>
+    </div>
+  )
 
   return (
     <div
@@ -240,16 +299,33 @@ export function UploadZone() {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <p className="text-sm text-muted-foreground mb-4">
-        {isProcessing
-          ? progress > 0 
-            ? `正在处理文件... ${progress}%`
-            : '正在处理文件...'
-          : '拖放目录文件到这里，或点击选择文件'}
-      </p>
-      <p className="text-xs text-muted-foreground mb-4">
-        支持的最大文件大小：{formatFileSize(MAX_FILE_SIZE)}
-      </p>
+      {isProcessing ? (
+        renderProgress()
+      ) : (
+        <div className="text-center space-y-4">
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              拖放目录文件到这里，或点击选择文件
+            </p>
+            <p className="text-xs text-muted-foreground">
+              支持的最大文件大小：{formatFileSize(MAX_FILE_SIZE)}
+            </p>
+          </div>
+          <div className="flex justify-center">
+            <Button 
+              variant="default"
+              size="lg" 
+              disabled={isProcessing}
+              onClick={() => {
+                const input = document.getElementById('file-input') as HTMLInputElement
+                input?.click()
+              }}
+            >
+              选择文件
+            </Button>
+          </div>
+        </div>
+      )}
       <input
         type="file"
         accept=".txt"
@@ -258,16 +334,6 @@ export function UploadZone() {
         onChange={handleFileSelect}
         disabled={isProcessing}
       />
-      <label htmlFor="file-input">
-        <Button 
-          type="button"
-          size="lg" 
-          disabled={isProcessing}
-          className="cursor-pointer"
-        >
-          {isProcessing ? '处理中...' : '选择文件'}
-        </Button>
-      </label>
     </div>
   )
 } 
