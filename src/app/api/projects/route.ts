@@ -5,7 +5,8 @@ interface DirectoryItem {
   name: string
   type: string
   level: number
-  children?: DirectoryItem[]
+  order: number
+  parentOrder: number | null
 }
 
 interface CreateItem {
@@ -21,108 +22,89 @@ async function processItems(items: DirectoryItem[], projectId: string) {
   console.log('开始处理目录项，项目ID:', projectId)
   console.log('输入项目数量:', items.length)
   
-  const itemsToCreate: CreateItem[] = []
-  const parentChildMap = new Map<number, number>() // 使用 order 作为映射键
-  let order = 0
-
-  // 扁平化处理所有项目
-  function flattenItems(item: DirectoryItem, parentOrder: number | null = null) {
-    const currentOrder = order++
-    
-    itemsToCreate.push({
-      name: item.name,
-      type: item.type,
-      level: item.level,
-      order: currentOrder,
-      parentId: null,
-      projectId: projectId
-    })
-
-    if (parentOrder !== null) {
-      parentChildMap.set(currentOrder, parentOrder)
-    }
-
-    if (item.children?.length) {
-      for (const child of item.children) {
-        flattenItems(child, currentOrder)
-      }
-    }
-  }
-
-  // 处理所有项目
-  for (const item of items) {
-    flattenItems(item)
-  }
-  console.log('扁平化后的项目数量:', itemsToCreate.length)
+  // 创建记录
+  const itemsToCreate = items.map(item => ({
+    name: item.name,
+    type: item.type,
+    level: item.level,
+    order: item.order,
+    parentId: null, // 先设为 null，后面更新
+    projectId: projectId
+  }))
 
   try {
-    // 使用事务处理所有数据库操作
-    return await prisma.$transaction(async (tx) => {
-      // 一次性创建所有记录
-      const BATCH_SIZE = 5000 // 增加批处理大小
-      const batches: CreateItem[][] = []
-      
-      for (let i = 0; i < itemsToCreate.length; i += BATCH_SIZE) {
-        batches.push(itemsToCreate.slice(i, i + BATCH_SIZE))
-      }
-      console.log(`分成 ${batches.length} 个批次处理...`)
+    // 分批创建记录
+    const BATCH_SIZE = 1000
+    const batches: CreateItem[][] = []
+    for (let i = 0; i < itemsToCreate.length; i += BATCH_SIZE) {
+      batches.push(itemsToCreate.slice(i, i + BATCH_SIZE))
+    }
+    console.log(`分成 ${batches.length} 个批次处理...`)
 
-      // 并行创建记录
-      await Promise.all(
-        batches.map(async (batch, index) => {
-          console.log(`处理第 ${index + 1}/${batches.length} 批`)
-          await tx.item.createMany({
-            data: batch,
-            skipDuplicates: true
-          })
-        })
-      )
-
-      // 一次性获取所有创建的记录
-      const createdItems = await tx.item.findMany({
-        where: { projectId },
-        select: {
-          id: true,
-          order: true
-        },
-        orderBy: { order: 'asc' }
+    // 串行创建记录
+    for (let i = 0; i < batches.length; i++) {
+      console.log(`创建第 ${i + 1}/${batches.length} 批记录`)
+      await prisma.item.createMany({
+        data: batches[i],
+        skipDuplicates: true
       })
+    }
 
-      // 构建 order 到 id 的映射
-      const orderToId = new Map(createdItems.map(item => [item.order, item.id]))
-
-      // 构建更新数据
-      const updates = Array.from(parentChildMap.entries())
-        .map(([childOrder, parentOrder]) => ({
-          childId: orderToId.get(childOrder),
-          parentId: orderToId.get(parentOrder)
-        }))
-        .filter(update => update.childId && update.parentId)
-
-      // 分批更新父子关系
-      if (updates.length > 0) {
-        const UPDATE_BATCH_SIZE = 2000
-        for (let i = 0; i < updates.length; i += UPDATE_BATCH_SIZE) {
-          const batch = updates.slice(i, i + UPDATE_BATCH_SIZE)
-          const values = batch
-            .map(update => `('${update.childId}', '${update.parentId}')`)
-            .join(',')
-          
-          await tx.$executeRawUnsafe(`
-            UPDATE directory_items AS t
-            SET parent_id = c.parent_id
-            FROM (VALUES ${values}) AS c(id, parent_id)
-            WHERE t.id = c.id;
-          `)
-        }
+    // 获取所有创建的记录
+    console.log('获取创建的记录...')
+    const createdItems = await prisma.item.findMany({
+      where: { projectId },
+      select: {
+        id: true,
+        order: true
+      },
+      orderBy: {
+        order: 'asc'
       }
-      console.log('父子关系更新完成')
-
-      return createdItems
-    }, {
-      maxWait: 60000, // 最长等待时间：60秒
-      timeout: 60000  // 事务超时时间：60秒
     })
+    console.log('获取到记录数量:', createdItems.length)
+
+    // 构建 order 到 id 的映射
+    const orderToId = new Map(createdItems.map(item => [item.order, item.id]))
+
+    // 构建父子关系更新
+    console.log('构建父子关系更新...')
+    const updates = items
+      .filter(item => item.parentOrder !== null)
+      .map(item => ({
+        id: orderToId.get(item.order),
+        parentId: orderToId.get(item.parentOrder!)
+      }))
+      .filter(update => update.id && update.parentId)
+
+    console.log('需要更新的父子关系数量:', updates.length)
+
+    // 分批更新父子关系
+    if (updates.length > 0) {
+      const UPDATE_BATCH_SIZE = 1000
+      const updateBatches = []
+      for (let i = 0; i < updates.length; i += UPDATE_BATCH_SIZE) {
+        updateBatches.push(updates.slice(i, i + UPDATE_BATCH_SIZE))
+      }
+
+      for (let i = 0; i < updateBatches.length; i++) {
+        console.log(`更新第 ${i + 1}/${updateBatches.length} 批父子关系`)
+        const batch = updateBatches[i]
+        const values = batch
+          .map(update => `('${update.id}', '${update.parentId}')`)
+          .join(',')
+        
+        await prisma.$executeRawUnsafe(`
+          UPDATE directory_items AS t
+          SET parent_id = c.parent_id
+          FROM (VALUES ${values}) AS c(id, parent_id)
+          WHERE t.id = c.id;
+        `)
+      }
+    }
+    console.log('父子关系更新完成')
+
+    return createdItems
   } catch (error: any) {
     console.error('批量处理项目时出错:', error)
     throw error

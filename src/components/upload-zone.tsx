@@ -71,95 +71,109 @@ export function UploadZone() {
       console.log('文件读取完成')
       setProgress(25)
 
-      // 直接解析整个文件
+      // 解析整个目录结构
       console.log('开始解析目录结构...')
-      const processedItems = parseDirectoryText(text)
-      console.log('解析后的目录结构:', processedItems)
-      console.log('实际项目数量:', processedItems.length)
+      const rootItems = parseDirectoryText(text)
+      console.log('解析后的目录结构:', rootItems)
       setProgress(50)
 
-      // 分批上传数据
-      const ITEMS_PER_BATCH = 200 // 每批处理的项目数
-      const totalItems = processedItems.length
-      console.log('预计分批数量:', Math.ceil(totalItems / ITEMS_PER_BATCH))
-      
-      let projectId: string | null = null
-      let retryCount = 0
-      const maxRetries = 3
-      
-      // 预处理：将所有项目分组
-      const batches: DirectoryItem[][] = []
-      for (let i = 0; i < processedItems.length; i += ITEMS_PER_BATCH) {
-        batches.push(processedItems.slice(i, i + ITEMS_PER_BATCH))
+      // 扁平化处理，同时保存父子关系
+      interface FlatItem {
+        name: string
+        type: string
+        level: number
+        order: number
+        parentOrder: number | null
       }
-      const totalBatches = batches.length
-      console.log('实际分批数量:', totalBatches, '每批大小:', ITEMS_PER_BATCH)
+
+      const flatItems: FlatItem[] = []
+      let order = 0
+
+      function flattenItems(items: DirectoryItem[], parentOrder: number | null = null) {
+        items.forEach(item => {
+          const currentOrder = order++
+          flatItems.push({
+            name: item.name,
+            type: item.type,
+            level: item.level,
+            order: currentOrder,
+            parentOrder
+          })
+
+          if (item.children?.length) {
+            flattenItems(item.children, currentOrder)
+          }
+        })
+      }
+
+      flattenItems(rootItems)
+      console.log('扁平化后的项目数量:', flatItems.length)
+
+      // 分批处理
+      const BATCH_SIZE = 1000
+      const batches: FlatItem[][] = []
+      for (let i = 0; i < flatItems.length; i += BATCH_SIZE) {
+        batches.push(flatItems.slice(i, i + BATCH_SIZE))
+      }
+      console.log(`分成 ${batches.length} 个批次处理`)
 
       // 串行处理每个批次
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-        const batchItems = batches[batchIndex]
-        console.log(`准备发送第 ${batchIndex + 1}/${totalBatches} 批，项目数量:`, batchItems.length)
-        const batchNumber = batchIndex + 1
-        const isFirstBatch = batchIndex === 0
-        const isLastBatch = batchIndex === batches.length - 1
+      let projectId: string | null = null
+      
+      for (let i = 0; i < batches.length; i++) {
+        const formData = new FormData()
+        if (i === 0) {
+          formData.append('name', file.name.replace(/\.[^/.]+$/, ''))
+        }
+        formData.append('structure', JSON.stringify(batches[i]))
+        if (projectId) {
+          formData.append('projectId', projectId)
+        }
+        formData.append('batchNumber', String(i + 1))
+        formData.append('totalBatches', String(batches.length))
+        formData.append('isLastBatch', String(i === batches.length - 1))
 
-        // 重试逻辑
-        let success = false
-        retryCount = 0 // 每个批次重置重试计数
+        // 添加重试逻辑
+        let retryCount = 0
+        const maxRetries = 3
         
-        while (!success && retryCount < maxRetries) {
+        while (retryCount < maxRetries) {
           try {
-            const formData = new FormData()
-            if (isFirstBatch) {
-              formData.append('name', file.name.replace(/\.[^/.]+$/, ''))
-            }
-            formData.append('structure', JSON.stringify(batchItems))
-            if (projectId) {
-              formData.append('projectId', projectId)
-            }
-            formData.append('isLastBatch', String(isLastBatch))
-            formData.append('totalItems', String(totalItems))
-            formData.append('batchNumber', String(batchNumber))
-            formData.append('totalBatches', String(totalBatches))
-
-            console.log(`发送第 ${batchNumber}/${totalBatches} 批数据到服务器...`)
-            const response = await fetch('/api/projects', {
-              method: 'POST',
-              body: formData,
+            console.log(`发送第 ${i + 1}/${batches.length} 批`)
+            const response = await fetch('/api/projects', { 
+              method: 'POST', 
+              body: formData 
             })
 
             if (!response.ok) {
-              const data = await response.json()
-              console.error('服务器返回错误:', data)
-              throw new Error(data.message || data.error || '上传失败')
+              throw new Error('创建项目失败')
             }
 
-            const data = await response.json()
-            if (isFirstBatch) {
-              projectId = data.id
+            const result = await response.json()
+            if (i === 0) {
+              projectId = result.id
+              console.log('项目创建成功:', projectId)
             }
-
-            // 每批处理成功后等待一小段时间，避免请求过于频繁
-            await new Promise(resolve => setTimeout(resolve, 500))
-            success = true
+            break
           } catch (error) {
+            console.error(`第 ${i + 1} 批处理失败:`, error)
             retryCount++
-            if (retryCount >= maxRetries) {
-              throw error
-            }
-            console.log(`第 ${batchNumber} 批上传失败，等待重试...`)
-            await new Promise(resolve => setTimeout(resolve, 2000 * retryCount))
+            if (retryCount === maxRetries) throw error
+            // 指数退避重试
+            await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000))
           }
         }
 
-        // 更新上传进度（50-99%）
-        const uploadProgress = 50 + Math.round((batchIndex + 1) / totalBatches * 49)
-        setProgress(Math.min(uploadProgress, 99))
+        // 更新进度
+        setProgress(50 + Math.floor((i + 1) / batches.length * 50))
+        
+        // 每批处理后等待一段时间，避免触发限制
+        await new Promise(resolve => setTimeout(resolve, 1000))
       }
 
       // 完成进度
       setProgress(100)
-      
+
       // 延迟跳转，让用户看到100%进度
       await new Promise(resolve => setTimeout(resolve, 500))
       if (projectId) {
